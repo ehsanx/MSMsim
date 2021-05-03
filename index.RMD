@@ -13,6 +13,7 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 require(survival)
 require(dplyr)
+require(ggplot2)
 ```
 
 # Simulation setting
@@ -35,18 +36,22 @@ require(dplyr)
   - treatment effect in beta coef
   
 ```{r}
-alpha0 <- .5
-alpha1 <- .5
-beta0 <- 0
-beta1 <- -5
-theta0 <- -3
-theta1 <- -2
-theta2 <- -.8
+alpha0 <- 0.5 # Exposure / A model (intercept)
+alpha1 <- 0.5 # Exposure / A model (slope for L)
+beta0 <- 0  # Time-dependent variable / L model (intercept)
+beta1 <- -5 # Time-dependent variable / L model (slope for Alag)
+theta0 <- -3 # Outcome / Y model (intercept)
+theta1 <- -2 # Outcome / Y model (slope for L)
+theta2 <- -0.8 # Outcome / Y model (slope for A)
 ```
   
 ## Simulation Details  
 
-100 simulation iterations were performed with 2,500 subjects in each simulation, with up to 10 followup
+100 simulation iterations were performed: 
+
+- with 2,500 subjects in each simulation, 
+- with up to 10 followup. 
+  - Followup could be less than 10, dependent on theta0.
 
 ```{r}
 followup <- 10 # followup
@@ -170,24 +175,29 @@ mat.cox.adj.all <- mat.cox.all <- mat.msm.w.all <- mat.msm.all <- NULL
 for (k in 1:NSim){
   #aggregate.data <- read.csv(file = paste0("data/file", k, ".csv"))
   aggregate.data <- saved.data[[k]]
-  
+  # Step 1: Weight denominator model
   ww <- glm(A ~ tpoint + L + Alag + Llag, family = binomial(logit), data = aggregate.data)
+  # Step 2: Weight numerator model
   ww0 <- glm(A ~ tpoint + Alag, family = binomial(logit), data = aggregate.data)
+  # Step 3: Obtain fir from the weight models
   aggregate.data$wwp <- with(aggregate.data, ifelse(A == 0, 1 - fitted(ww), fitted(ww)))
   aggregate.data$wwp0 <- with(aggregate.data, ifelse(A == 0, 1 - fitted(ww0),fitted(ww0)))
+  # Step 4: time-dependent weights
   aggregate.data$w <- unlist(tapply(1/aggregate.data$wwp, aggregate.data$id, cumprod))
   aggregate.data$sw <- unlist(tapply(aggregate.data$wwp0/aggregate.data$wwp, aggregate.data$id, cumprod))
   summary(aggregate.data$sw)
   require(survival)
-  fit.cox <- coxph(Surv(tpoint0, tpoint, Y) ~ A + cluster(id), data = aggregate.data, robust =TRUE)
-  mat.cox <- ext.cox(fit.cox)
-  fit.cox.adj <- coxph(Surv(tpoint0, tpoint, Y) ~ A + L + cluster(id), data = aggregate.data, robust =TRUE)
-  mat.cox.adj <- ext.cox(fit.cox.adj)
+  # Step 5: Weighted outcome model
   fit.msm.w <- coxph(Surv(tpoint0, tpoint, Y) ~ A + cluster(id), data = aggregate.data, weight = w, robust =TRUE)
   mat.msm.w <- ext.cox(fit.msm.w)
   fit.msm <- coxph(Surv(tpoint0, tpoint, Y) ~ A + cluster(id), data = aggregate.data, weight = sw, robust =TRUE)
   mat.msm <- ext.cox(fit.msm)
-  # results
+  # Comparison with unweighted models
+  fit.cox <- coxph(Surv(tpoint0, tpoint, Y) ~ A + cluster(id), data = aggregate.data, robust =TRUE)
+  mat.cox <- ext.cox(fit.cox)
+  fit.cox.adj <- coxph(Surv(tpoint0, tpoint, Y) ~ A + L + cluster(id), data = aggregate.data, robust =TRUE)
+  mat.cox.adj <- ext.cox(fit.cox.adj)
+  # Results
   mat.cox.all <- as.data.frame(rbind(mat.cox.all, mat.cox))
   mat.cox.adj.all <- as.data.frame(rbind(mat.cox.adj.all, mat.cox.adj))
   mat.msm.w.all <- as.data.frame(rbind(mat.msm.w.all, mat.msm.w))
@@ -211,31 +221,64 @@ saveRDS(mat.msm.all, file = "data/msm.rds")
 # Results
 ## Detailed Results
 
+True value for theta2
+```{r}
+theta2
+```
+
+
+Coefs from unadjusted Cox regression, blue line is the reference theta2=-0.8. Red line is the mean of coefs.
+```{r}
+require(ggplot2)
+p <- ggplot(mat.cox.all, aes(x=coef)) + 
+  geom_density()
+p+ geom_vline(aes(xintercept=mean(coef)),
+            color="red", linetype="dashed", size=1)+
+  geom_vline(xintercept=-0.8, color ="blue")
+```
+
 Coefs from adjusted Cox regression (adjusted by L)
 ```{r}
-round(mat.cox.adj.all$coef,2)
+p <- ggplot(mat.cox.adj.all, aes(x=coef)) + 
+  geom_density()
+p+ geom_vline(aes(xintercept=mean(coef)),
+            color="red", linetype="dashed", size=1) +
+  geom_vline(xintercept=-0.8, color ="blue")
+```
+
+Coefs from MSM (unstabilized weights used)
+```{r}
+p <- ggplot(mat.msm.w.all, aes(x=coef)) + 
+  geom_density()
+p+ geom_vline(aes(xintercept=mean(coef)),
+            color="red", linetype="dashed", size=1) + 
+  geom_vline(xintercept=-0.8, color ="blue")
 ```
 
 Coefs from MSM (stabilized weights used)
 ```{r}
-round(mat.msm.all$coef,2)
+p <- ggplot(mat.msm.all, aes(x=coef)) + 
+  geom_density()
+p+ geom_vline(aes(xintercept=mean(coef)),
+            color="red", linetype="dashed", size=1) +
+  geom_vline(xintercept=-0.8, color ="blue")
 ```
 
 ## Print Summary Results
 
-Results from unadjusted Cox regression
+Percent bias from unadjusted Cox regression
 ```{r}
-summary(mat.cox.all$coef)
+cat(round((mean(mat.cox.all$coef)-theta2)*100/theta2,2), "%")
 ```
 
-Results from adjusted Cox regression (adjusted by L)
+Percent bias from adjusted Cox regression (adjusted by L)
 ```{r}
-summary(mat.cox.adj.all$coef)
+cat(round((mean(mat.cox.adj.all$coef)-theta2)*100/theta2,2), "%")
 ```
 
-Results from MSM (unstabilized weights used)
+Percent bias from MSM (unstabilized weights used)
 ```{r}
-summary(mat.msm.w.all$coef)
+cat(round((mean(mat.msm.w.all$coef)-theta2)*100/theta2,2), "%")
 ```
 
 Investigating unstabilized weights (large weights)
@@ -243,9 +286,9 @@ Investigating unstabilized weights (large weights)
 round(range(mat.msm.w.all$maxW),2)
 ```
 
-Results from MSM (stabilized weights used)
+Percent bias from MSM (stabilized weights used)
 ```{r}
-summary(mat.msm.all$coef)
+cat(round((mean(mat.msm.all$coef)-theta2)*100/theta2,2), "%")
 ```
 
 Investigating stabilized weights (reasonable weights)
